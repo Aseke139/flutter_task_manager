@@ -1,0 +1,617 @@
+diff --git a/flutter_task_manager/.gitignore b/flutter_task_manager/.gitignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7e75c963954a41603518db7ea144d38858aba16
+--- /dev/null
++++ b/flutter_task_manager/.gitignore
+@@ -0,0 +1,6 @@
++.dart_tool/
++.packages
++.pub/
++build/
++.flutter-plugins
++.flutter-plugins-dependencies
+diff --git a/flutter_task_manager/README.md b/flutter_task_manager/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..c72f9e592880553c1a684b0e705a3450ec3711d3
+--- /dev/null
++++ b/flutter_task_manager/README.md
+@@ -0,0 +1,42 @@
++# Flutter Task Manager (Android + SQLite)
++
++Simple mobile task manager app built with Flutter and SQLite.
++
++## Features
++
++- Create, edit, delete **Blocks** (categories)
++- Create, edit, delete **Tasks** inside blocks
++- Mark tasks completed with checkbox
++- Completed tasks are crossed out visually
++- Open task details to create, edit, delete **Comments**
++- SQLite persistence with foreign keys and cascading deletes
++
++## Database Schema
++
++### blocks
++- `id` INTEGER PRIMARY KEY AUTOINCREMENT
++- `name` TEXT NOT NULL
++- `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++
++### tasks
++- `id` INTEGER PRIMARY KEY AUTOINCREMENT
++- `block_id` INTEGER NOT NULL (FK -> blocks.id ON DELETE CASCADE)
++- `title` TEXT NOT NULL
++- `is_completed` INTEGER NOT NULL DEFAULT 0
++- `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++
++### comments
++- `id` INTEGER PRIMARY KEY AUTOINCREMENT
++- `task_id` INTEGER NOT NULL (FK -> tasks.id ON DELETE CASCADE)
++- `text` TEXT NOT NULL
++- `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++
++## Run
++
++1. Install Flutter SDK
++2. From this folder run:
++   ```bash
++   flutter pub get
++   flutter run
++   ```
++
+diff --git a/flutter_task_manager/analysis_options.yaml b/flutter_task_manager/analysis_options.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9b303465f19b5fbf5ec669cd083c9cc38ecda9a
+--- /dev/null
++++ b/flutter_task_manager/analysis_options.yaml
+@@ -0,0 +1 @@
++include: package:flutter_lints/flutter.yaml
+diff --git a/flutter_task_manager/lib/database/database_helper.dart b/flutter_task_manager/lib/database/database_helper.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..496bf78736fb6d5c4b2252fd43a88591e4b97360
+--- /dev/null
++++ b/flutter_task_manager/lib/database/database_helper.dart
+@@ -0,0 +1,134 @@
++import 'package:path/path.dart';
++import 'package:sqflite/sqflite.dart';
++
++class DatabaseHelper {
++  DatabaseHelper._();
++  static final DatabaseHelper instance = DatabaseHelper._();
++
++  static const _databaseName = 'task_manager.db';
++  static const _databaseVersion = 1;
++
++  Database? _database;
++
++  Future<Database> get database async {
++    if (_database != null) return _database!;
++    _database = await _initDatabase();
++    return _database!;
++  }
++
++  Future<Database> _initDatabase() async {
++    final dbPath = await getDatabasesPath();
++    final path = join(dbPath, _databaseName);
++
++    return openDatabase(
++      path,
++      version: _databaseVersion,
++      onConfigure: (db) async {
++        await db.execute('PRAGMA foreign_keys = ON');
++      },
++      onCreate: (db, version) async {
++        await db.execute('''
++          CREATE TABLE blocks (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            name TEXT NOT NULL,
++            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++          )
++        ''');
++
++        await db.execute('''
++          CREATE TABLE tasks (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            block_id INTEGER NOT NULL,
++            title TEXT NOT NULL,
++            is_completed INTEGER NOT NULL DEFAULT 0,
++            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++            FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
++          )
++        ''');
++
++        await db.execute('''
++          CREATE TABLE comments (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            task_id INTEGER NOT NULL,
++            text TEXT NOT NULL,
++            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
++          )
++        ''');
++      },
++    );
++  }
++
++  // BLOCKS CRUD
++  Future<List<Map<String, dynamic>>> getBlocks() async {
++    final db = await database;
++    return db.query('blocks', orderBy: 'created_at DESC');
++  }
++
++  Future<int> insertBlock(String name) async {
++    final db = await database;
++    return db.insert('blocks', {'name': name});
++  }
++
++  Future<int> updateBlock(int id, String name) async {
++    final db = await database;
++    return db.update('blocks', {'name': name}, where: 'id = ?', whereArgs: [id]);
++  }
++
++  Future<int> deleteBlock(int id) async {
++    final db = await database;
++    return db.delete('blocks', where: 'id = ?', whereArgs: [id]);
++  }
++
++  // TASKS CRUD
++  Future<List<Map<String, dynamic>>> getTasksByBlock(int blockId) async {
++    final db = await database;
++    return db.query('tasks', where: 'block_id = ?', whereArgs: [blockId], orderBy: 'created_at DESC');
++  }
++
++  Future<int> insertTask(int blockId, String title) async {
++    final db = await database;
++    return db.insert('tasks', {'block_id': blockId, 'title': title, 'is_completed': 0});
++  }
++
++  Future<int> updateTask(int id, String title) async {
++    final db = await database;
++    return db.update('tasks', {'title': title}, where: 'id = ?', whereArgs: [id]);
++  }
++
++  Future<int> toggleTaskCompleted(int id, bool isCompleted) async {
++    final db = await database;
++    return db.update(
++      'tasks',
++      {'is_completed': isCompleted ? 1 : 0},
++      where: 'id = ?',
++      whereArgs: [id],
++    );
++  }
++
++  Future<int> deleteTask(int id) async {
++    final db = await database;
++    return db.delete('tasks', where: 'id = ?', whereArgs: [id]);
++  }
++
++  // COMMENTS CRUD
++  Future<List<Map<String, dynamic>>> getCommentsByTask(int taskId) async {
++    final db = await database;
++    return db.query('comments', where: 'task_id = ?', whereArgs: [taskId], orderBy: 'created_at DESC');
++  }
++
++  Future<int> insertComment(int taskId, String text) async {
++    final db = await database;
++    return db.insert('comments', {'task_id': taskId, 'text': text});
++  }
++
++  Future<int> updateComment(int id, String text) async {
++    final db = await database;
++    return db.update('comments', {'text': text}, where: 'id = ?', whereArgs: [id]);
++  }
++
++  Future<int> deleteComment(int id) async {
++    final db = await database;
++    return db.delete('comments', where: 'id = ?', whereArgs: [id]);
++  }
++}
+diff --git a/flutter_task_manager/lib/main.dart b/flutter_task_manager/lib/main.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..917fef912b2b55dafe1e9fe501c89d639607af38
+--- /dev/null
++++ b/flutter_task_manager/lib/main.dart
+@@ -0,0 +1,361 @@
++import 'package:flutter/material.dart';
++
++import 'database/database_helper.dart';
++
++void main() {
++  runApp(const TaskManagerApp());
++}
++
++class TaskManagerApp extends StatelessWidget {
++  const TaskManagerApp({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    return MaterialApp(
++      title: 'Task Manager',
++      debugShowCheckedModeBanner: false,
++      theme: ThemeData(
++        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
++        useMaterial3: true,
++      ),
++      home: const BlocksScreen(),
++    );
++  }
++}
++
++class BlocksScreen extends StatefulWidget {
++  const BlocksScreen({super.key});
++
++  @override
++  State<BlocksScreen> createState() => _BlocksScreenState();
++}
++
++class _BlocksScreenState extends State<BlocksScreen> {
++  final db = DatabaseHelper.instance;
++
++  Future<void> _showBlockDialog({Map<String, dynamic>? block}) async {
++    final controller = TextEditingController(text: block?['name'] ?? '');
++
++    await showDialog<void>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(block == null ? 'Add Block' : 'Edit Block'),
++        content: TextField(
++          controller: controller,
++          autofocus: true,
++          decoration: const InputDecoration(labelText: 'Block name'),
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
++          FilledButton(
++            onPressed: () async {
++              final name = controller.text.trim();
++              if (name.isEmpty) return;
++
++              if (block == null) {
++                await db.insertBlock(name);
++              } else {
++                await db.updateBlock(block['id'] as int, name);
++              }
++
++              if (context.mounted) Navigator.pop(context);
++              setState(() {});
++            },
++            child: const Text('Save'),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Future<void> _deleteBlock(int id) async {
++    await db.deleteBlock(id);
++    setState(() {});
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(title: const Text('Blocks')),
++      body: FutureBuilder<List<Map<String, dynamic>>>(
++        future: db.getBlocks(),
++        builder: (context, snapshot) {
++          if (snapshot.connectionState != ConnectionState.done) {
++            return const Center(child: CircularProgressIndicator());
++          }
++
++          final blocks = snapshot.data ?? [];
++          if (blocks.isEmpty) {
++            return const Center(child: Text('No blocks yet. Tap + to add one.'));
++          }
++
++          return ListView.separated(
++            itemCount: blocks.length,
++            separatorBuilder: (_, __) => const Divider(height: 0),
++            itemBuilder: (context, index) {
++              final block = blocks[index];
++              return ListTile(
++                title: Text(block['name'] as String),
++                onTap: () => Navigator.push(
++                  context,
++                  MaterialPageRoute(
++                    builder: (_) => TasksScreen(
++                      blockId: block['id'] as int,
++                      blockName: block['name'] as String,
++                    ),
++                  ),
++                ).then((_) => setState(() {})),
++                trailing: Row(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    IconButton(
++                      icon: const Icon(Icons.edit_outlined),
++                      onPressed: () => _showBlockDialog(block: block),
++                    ),
++                    IconButton(
++                      icon: const Icon(Icons.delete_outline),
++                      onPressed: () => _deleteBlock(block['id'] as int),
++                    ),
++                  ],
++                ),
++              );
++            },
++          );
++        },
++      ),
++      floatingActionButton: FloatingActionButton(
++        onPressed: () => _showBlockDialog(),
++        child: const Icon(Icons.add),
++      ),
++    );
++  }
++}
++
++class TasksScreen extends StatefulWidget {
++  final int blockId;
++  final String blockName;
++
++  const TasksScreen({super.key, required this.blockId, required this.blockName});
++
++  @override
++  State<TasksScreen> createState() => _TasksScreenState();
++}
++
++class _TasksScreenState extends State<TasksScreen> {
++  final db = DatabaseHelper.instance;
++
++  Future<void> _showTaskDialog({Map<String, dynamic>? task}) async {
++    final controller = TextEditingController(text: task?['title'] ?? '');
++
++    await showDialog<void>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(task == null ? 'Add Task' : 'Edit Task'),
++        content: TextField(
++          controller: controller,
++          autofocus: true,
++          decoration: const InputDecoration(labelText: 'Task title'),
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
++          FilledButton(
++            onPressed: () async {
++              final title = controller.text.trim();
++              if (title.isEmpty) return;
++
++              if (task == null) {
++                await db.insertTask(widget.blockId, title);
++              } else {
++                await db.updateTask(task['id'] as int, title);
++              }
++
++              if (context.mounted) Navigator.pop(context);
++              setState(() {});
++            },
++            child: const Text('Save'),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Future<void> _deleteTask(int id) async {
++    await db.deleteTask(id);
++    setState(() {});
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(title: Text(widget.blockName)),
++      body: FutureBuilder<List<Map<String, dynamic>>>(
++        future: db.getTasksByBlock(widget.blockId),
++        builder: (context, snapshot) {
++          if (snapshot.connectionState != ConnectionState.done) {
++            return const Center(child: CircularProgressIndicator());
++          }
++
++          final tasks = snapshot.data ?? [];
++          if (tasks.isEmpty) {
++            return const Center(child: Text('No tasks yet. Tap + to add one.'));
++          }
++
++          return ListView.separated(
++            itemCount: tasks.length,
++            separatorBuilder: (_, __) => const Divider(height: 0),
++            itemBuilder: (context, index) {
++              final task = tasks[index];
++              final isCompleted = (task['is_completed'] as int) == 1;
++              final title = task['title'] as String;
++
++              return ListTile(
++                onTap: () => Navigator.push(
++                  context,
++                  MaterialPageRoute(
++                    builder: (_) => TaskDetailsScreen(taskId: task['id'] as int, taskTitle: title),
++                  ),
++                ).then((_) => setState(() {})),
++                leading: Checkbox(
++                  value: isCompleted,
++                  onChanged: (checked) async {
++                    await db.toggleTaskCompleted(task['id'] as int, checked ?? false);
++                    setState(() {});
++                  },
++                ),
++                title: Text(
++                  title,
++                  style: TextStyle(
++                    decoration: isCompleted ? TextDecoration.lineThrough : TextDecoration.none,
++                    color: isCompleted ? Colors.grey : null,
++                  ),
++                ),
++                subtitle: const Text('Tap to open comments'),
++                trailing: Row(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    IconButton(
++                      icon: const Icon(Icons.edit_outlined),
++                      onPressed: () => _showTaskDialog(task: task),
++                    ),
++                    IconButton(
++                      icon: const Icon(Icons.delete_outline),
++                      onPressed: () => _deleteTask(task['id'] as int),
++                    ),
++                  ],
++                ),
++              );
++            },
++          );
++        },
++      ),
++      floatingActionButton: FloatingActionButton(
++        onPressed: () => _showTaskDialog(),
++        child: const Icon(Icons.add),
++      ),
++    );
++  }
++}
++
++class TaskDetailsScreen extends StatefulWidget {
++  final int taskId;
++  final String taskTitle;
++
++  const TaskDetailsScreen({super.key, required this.taskId, required this.taskTitle});
++
++  @override
++  State<TaskDetailsScreen> createState() => _TaskDetailsScreenState();
++}
++
++class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
++  final db = DatabaseHelper.instance;
++
++  Future<void> _showCommentDialog({Map<String, dynamic>? comment}) async {
++    final controller = TextEditingController(text: comment?['text'] ?? '');
++
++    await showDialog<void>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(comment == null ? 'Add Comment' : 'Edit Comment'),
++        content: TextField(
++          controller: controller,
++          autofocus: true,
++          maxLines: 4,
++          decoration: const InputDecoration(labelText: 'Comment'),
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
++          FilledButton(
++            onPressed: () async {
++              final text = controller.text.trim();
++              if (text.isEmpty) return;
++
++              if (comment == null) {
++                await db.insertComment(widget.taskId, text);
++              } else {
++                await db.updateComment(comment['id'] as int, text);
++              }
++
++              if (context.mounted) Navigator.pop(context);
++              setState(() {});
++            },
++            child: const Text('Save'),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Future<void> _deleteComment(int id) async {
++    await db.deleteComment(id);
++    setState(() {});
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(title: Text(widget.taskTitle)),
++      body: FutureBuilder<List<Map<String, dynamic>>>(
++        future: db.getCommentsByTask(widget.taskId),
++        builder: (context, snapshot) {
++          if (snapshot.connectionState != ConnectionState.done) {
++            return const Center(child: CircularProgressIndicator());
++          }
++
++          final comments = snapshot.data ?? [];
++          if (comments.isEmpty) {
++            return const Center(child: Text('No comments yet. Tap + to add one.'));
++          }
++
++          return ListView.separated(
++            itemCount: comments.length,
++            separatorBuilder: (_, __) => const Divider(height: 0),
++            itemBuilder: (context, index) {
++              final comment = comments[index];
++              return ListTile(
++                title: Text(comment['text'] as String),
++                subtitle: Text('Created: ${comment['created_at']}'),
++                trailing: Row(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    IconButton(
++                      icon: const Icon(Icons.edit_outlined),
++                      onPressed: () => _showCommentDialog(comment: comment),
++                    ),
++                    IconButton(
++                      icon: const Icon(Icons.delete_outline),
++                      onPressed: () => _deleteComment(comment['id'] as int),
++                    ),
++                  ],
++                ),
++              );
++            },
++          );
++        },
++      ),
++      floatingActionButton: FloatingActionButton(
++        onPressed: () => _showCommentDialog(),
++        child: const Icon(Icons.add_comment_outlined),
++      ),
++    );
++  }
++}
+diff --git a/flutter_task_manager/pubspec.yaml b/flutter_task_manager/pubspec.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ad2f10a1925eb2e9cfb20e3989e2bb477f5bc14
+--- /dev/null
++++ b/flutter_task_manager/pubspec.yaml
+@@ -0,0 +1,22 @@
++name: flutter_task_manager
++description: A simple Android task manager with blocks, tasks, comments, using SQLite.
++publish_to: 'none'
++version: 1.0.0+1
++
++environment:
++  sdk: '>=3.3.0 <4.0.0'
++
++dependencies:
++  flutter:
++    sdk: flutter
++  cupertino_icons: ^1.0.8
++  sqflite: ^2.3.3+1
++  path: ^1.9.0
++
++dev_dependencies:
++  flutter_test:
++    sdk: flutter
++  flutter_lints: ^4.0.0
++
++flutter:
++  uses-material-design: true
+diff --git a/flutter_task_manager/test/widget_test.dart b/flutter_task_manager/test/widget_test.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..5273fbf308328b5c4d361778cd97bff7b58a0779
+--- /dev/null
++++ b/flutter_task_manager/test/widget_test.dart
+@@ -0,0 +1,9 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:flutter_task_manager/main.dart';
++
++void main() {
++  testWidgets('app starts with Blocks title', (tester) async {
++    await tester.pumpWidget(const TaskManagerApp());
++    expect(find.text('Blocks'), findsOneWidget);
++  });
++}
