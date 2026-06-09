@@ -1,16 +1,15 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
-import 'package:wifi_scan/wifi_scan.dart';
+import 'package:wifi_scan/wifi_scan.dart' as ws;
 import '../models/detection_models.dart';
 
 class WiFiScannerService extends ChangeNotifier {
   static const int _historySize = 30;
-  static const double _motionThreshold = 3.0;   // dBm variance to consider motion
-  static const double _presenceThreshold = 1.5; // dBm variance to confirm presence
+  static const double _motionThreshold = 3.0;
+  static const double _presenceThreshold = 1.5;
 
   final Map<String, List<SignalSample>> _signalHistory = {};
-  final List<ScanResult> _scanHistory = [];
   final List<DetectedBody> _currentBodies = [];
   final List<RadarBlip> _radarBlips = [];
 
@@ -27,12 +26,15 @@ class WiFiScannerService extends ChangeNotifier {
   double get scanAngle => _scanAngle;
   List<DetectedBody> get detectedBodies => List.unmodifiable(_currentBodies);
   List<RadarBlip> get radarBlips => List.unmodifiable(_radarBlips);
-  List<ScanResult> get scanHistory => List.unmodifiable(_scanHistory);
   int get scanCount => _scanCount;
 
   Future<bool> checkAndRequestPermissions() async {
-    final canScan = await WiFiScan.instance.canStartScan(askPermissions: true);
-    return canScan == CanStartScan.yes;
+    try {
+      final canScan = await ws.WiFiScan.instance.canStartScan(askPermissions: true);
+      return canScan == ws.CanStartScan.yes;
+    } catch (_) {
+      return false;
+    }
   }
 
   void startScanning() {
@@ -41,17 +43,12 @@ class WiFiScannerService extends ChangeNotifier {
     _statusMessage = 'Сканирование Wi-Fi сигналов...';
     notifyListeners();
 
-    // Rotate radar sweep angle
     Timer.periodic(const Duration(milliseconds: 50), (t) {
-      if (!_isScanning) {
-        t.cancel();
-        return;
-      }
+      if (!_isScanning) { t.cancel(); return; }
       _scanAngle = (_scanAngle + 0.03) % (2 * pi);
       notifyListeners();
     });
 
-    // Scan every 1.5 seconds
     _scanTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
       _performScan();
     });
@@ -70,56 +67,46 @@ class WiFiScannerService extends ChangeNotifier {
 
   Future<void> _performScan() async {
     try {
-      final canGetResults =
-          await WiFiScan.instance.canGetScannedResults(askPermissions: false);
+      final canGet = await ws.WiFiScan.instance.canGetScannedResults(
+        askPermissions: false,
+      );
 
-      List<WiFiAccessResult> accessResults = [];
+      if (canGet == ws.CanGetScannedResults.yes) {
+        await ws.WiFiScan.instance.startScan();
+        await Future.delayed(const Duration(milliseconds: 800));
+        final results = await ws.WiFiScan.instance.getScannedResults();
+        final now = DateTime.now();
 
-      if (canGetResults == CanGetScannedResults.yes) {
-        final started = await WiFiScan.instance.startScan();
-        if (started) {
-          await Future.delayed(const Duration(milliseconds: 800));
-        }
-        accessResults = await WiFiScan.instance.getScannedResults();
+        final aps = results.map((r) => APData(
+          bssid: r.bssid,
+          ssid: r.ssid,
+          rssi: r.level,
+          timestamp: now,
+          frequency: r.frequency,
+        )).toList();
+
+        _updateSignalHistory(aps, now);
+        _analyzeSignals(aps, now);
+      } else {
+        _generateMockData();
       }
-
-      final now = DateTime.now();
-      final aps = accessResults
-          .map((r) => WiFiAccessPoint(
-                bssid: r.bssid,
-                ssid: r.ssid ?? 'Unknown',
-                rssi: r.level,
-                timestamp: now,
-                frequency: r.frequency,
-              ))
-          .toList();
-
-      _updateSignalHistory(aps, now);
-      _analyzeSignals(aps, now);
-      _scanCount++;
-      notifyListeners();
-    } catch (e) {
-      // In simulator/permission denied — use mock data for demo
+    } catch (_) {
       _generateMockData();
-      _scanCount++;
-      notifyListeners();
     }
+    _scanCount++;
+    notifyListeners();
   }
 
-  void _updateSignalHistory(List<WiFiAccessPoint> aps, DateTime now) {
+  void _updateSignalHistory(List<APData> aps, DateTime now) {
     for (final ap in aps) {
-      if (!_signalHistory.containsKey(ap.bssid)) {
-        _signalHistory[ap.bssid] = [];
-      }
+      _signalHistory.putIfAbsent(ap.bssid, () => []);
       final history = _signalHistory[ap.bssid]!;
       history.add(SignalSample(bssid: ap.bssid, rssi: ap.rssi, time: now));
-      if (history.length > _historySize) {
-        history.removeAt(0);
-      }
+      if (history.length > _historySize) history.removeAt(0);
     }
   }
 
-  void _analyzeSignals(List<WiFiAccessPoint> aps, DateTime now) {
+  void _analyzeSignals(List<APData> aps, DateTime now) {
     if (_signalHistory.isEmpty) return;
 
     double totalVariance = 0.0;
@@ -128,7 +115,9 @@ class WiFiScannerService extends ChangeNotifier {
 
     for (final entry in _signalHistory.entries) {
       if (entry.value.length < 3) continue;
-      final variance = _calculateVariance(entry.value.map((s) => s.rssi.toDouble()).toList());
+      final variance = _calculateVariance(
+        entry.value.map((s) => s.rssi.toDouble()).toList(),
+      );
       apVariances[entry.key] = variance;
       totalVariance += variance;
       analyzedCount++;
@@ -165,7 +154,7 @@ class WiFiScannerService extends ChangeNotifier {
 
   void _updateDetectedBodies(
     Map<String, double> apVariances,
-    List<WiFiAccessPoint> aps,
+    List<APData> aps,
     DateTime now,
   ) {
     _currentBodies.clear();
@@ -182,20 +171,16 @@ class WiFiScannerService extends ChangeNotifier {
       final entry = motionAPs[i];
       final ap = aps.firstWhere(
         (a) => a.bssid == entry.key,
-        orElse: () => WiFiAccessPoint(
+        orElse: () => APData(
           bssid: entry.key, ssid: '?', rssi: -70,
           timestamp: now, frequency: 2412,
         ),
       );
 
-      // Estimate distance from RSSI (simplified free-space path loss)
       final rssiNorm = ((ap.rssi + 100).clamp(0, 60)) / 60.0;
       final distance = (1.0 - rssiNorm) * 0.85 + 0.1;
-
-      // Assign angle based on AP index (spread across 360 degrees)
       final angle = (i / motionAPs.length) * 2 * pi +
           (random.nextDouble() - 0.5) * 0.3;
-
       final intensity = (entry.value / (_motionThreshold * 3)).clamp(0.0, 1.0);
 
       final body = DetectedBody(
@@ -208,7 +193,6 @@ class WiFiScannerService extends ChangeNotifier {
       );
       _currentBodies.add(body);
 
-      // Add blip to radar
       _radarBlips.add(RadarBlip(
         position: body.radarPosition,
         intensity: intensity,
@@ -237,12 +221,10 @@ class WiFiScannerService extends ChangeNotifier {
     }
   }
 
-  // Demo/simulator mode — generates realistic mock signal data
   void _generateMockData() {
     final random = Random();
     final now = DateTime.now();
 
-    // Simulate 3-6 APs with varying signal levels
     final mockBSSIDs = [
       'AA:BB:CC:DD:EE:01',
       'AA:BB:CC:DD:EE:02',
@@ -250,40 +232,33 @@ class WiFiScannerService extends ChangeNotifier {
       'AA:BB:CC:DD:EE:04',
     ];
 
-    // Periodically introduce "motion" variance
     final motionCycle = (_scanCount ~/ 8) % 3;
     final hasMotion = motionCycle > 0;
 
     for (int i = 0; i < mockBSSIDs.length; i++) {
       final bssid = mockBSSIDs[i];
-      if (!_signalHistory.containsKey(bssid)) {
-        _signalHistory[bssid] = [];
-      }
-      // Base RSSI with varying noise
+      _signalHistory.putIfAbsent(bssid, () => []);
       double baseRssi = -50.0 - i * 10.0;
       double noise = (random.nextDouble() - 0.5) * 2.0;
       if (hasMotion && i < motionCycle + 1) {
-        // Add motion-like variance
         noise += (random.nextDouble() - 0.5) * 12.0;
       }
-      final rssi = (baseRssi + noise).round();
-
       final history = _signalHistory[bssid]!;
-      history.add(SignalSample(bssid: bssid, rssi: rssi, time: now));
+      history.add(SignalSample(
+        bssid: bssid,
+        rssi: (baseRssi + noise).round(),
+        time: now,
+      ));
       if (history.length > _historySize) history.removeAt(0);
     }
 
-    final mockAPs = mockBSSIDs
-        .asMap()
-        .entries
-        .map((e) => WiFiAccessPoint(
-              bssid: e.value,
-              ssid: 'WiFi_Demo_${e.key + 1}',
-              rssi: (-50 - e.key * 10),
-              timestamp: now,
-              frequency: 2412 + e.key * 5,
-            ))
-        .toList();
+    final mockAPs = mockBSSIDs.asMap().entries.map((e) => APData(
+      bssid: e.value,
+      ssid: 'WiFi_Demo_${e.key + 1}',
+      rssi: (-50 - e.key * 10),
+      timestamp: now,
+      frequency: 2412 + e.key * 5,
+    )).toList();
 
     _analyzeSignals(mockAPs, now);
   }

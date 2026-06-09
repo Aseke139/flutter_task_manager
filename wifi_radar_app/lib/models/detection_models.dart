@@ -1,13 +1,14 @@
 import 'dart:math';
+import 'dart:ui';
 
-class WiFiAccessPoint {
+class APData {
   final String bssid;
   final String ssid;
   final int rssi;
   final DateTime timestamp;
   final int frequency;
 
-  WiFiAccessPoint({
+  APData({
     required this.bssid,
     required this.ssid,
     required this.rssi,
@@ -28,8 +29,8 @@ enum DetectionLevel { none, low, medium, high, critical }
 
 class DetectedBody {
   final String id;
-  final double angle;    // angle in radians on radar
-  final double distance; // normalized 0.0 - 1.0
+  final double angle;
+  final double distance;
   final double intensity;
   final DateTime detectedAt;
   final bool isMoving;
@@ -62,25 +63,9 @@ class DetectedBody {
   }
 }
 
-class ScanResult {
-  final List<WiFiAccessPoint> accessPoints;
-  final DateTime scanTime;
-  final DetectionLevel overallLevel;
-  final List<DetectedBody> detectedBodies;
-  final double signalVariance;
-
-  ScanResult({
-    required this.accessPoints,
-    required this.scanTime,
-    required this.overallLevel,
-    required this.detectedBodies,
-    required this.signalVariance,
-  });
-}
-
 class RadarBlip {
-  final Offset position; // -1.0 to 1.0 on each axis
-  final double intensity; // 0.0 - 1.0
+  final Offset position;
+  final double intensity;
   final DateTime createdAt;
   final bool isActive;
 

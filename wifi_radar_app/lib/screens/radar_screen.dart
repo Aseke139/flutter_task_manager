@@ -17,8 +17,6 @@ class RadarScreen extends StatefulWidget {
 class _RadarScreenState extends State<RadarScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _pulseController;
-  bool _permissionsGranted = false;
-
   @override
   void initState() {
     super.initState();
@@ -33,11 +31,11 @@ class _RadarScreenState extends State<RadarScreen>
   Future<void> _checkPermissions() async {
     final service = context.read<WiFiScannerService>();
     final granted = await service.checkAndRequestPermissions();
-    if (mounted) {
-      setState(() => _permissionsGranted = granted);
-      if (granted) {
-        service.startScanning();
-      }
+    if (mounted && granted) {
+      service.startScanning();
+    } else if (mounted) {
+      // Start anyway — will use demo mode if Wi-Fi unavailable
+      service.startScanning();
     }
   }
 
